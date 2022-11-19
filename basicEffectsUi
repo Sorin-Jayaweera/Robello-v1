@@ -1,0 +1,961 @@
+//basic code, no structures or anything. Mainly a proof of concept
+//see readMe
+/*
+
+look at button pins for the layout, it's just an array of 8 buttons and 4 potentiometers.
+  - You'll have to change the potentiometer max and min values in the map() functions for your own setup.
+
+What code does:
+if playing is active, buttons edit which effects are active
+if editing is active, the last toggeled effect is the one who'se parameters are being effected
+if live-edit-playing, the changes are sent out immediatly, 
+  - fun to do with freeverb quickly up and down for roomsize.
+  - also good for testing effects.
+  
+  
+Todo: Add implimentation for wack frequency harmonizer, under name "read frequency" is called every time. Otherwise, just use most recent.
+buttons that toggle delay, freeverb, chorus, bitCrusheron, flange, and harmonize to on/off
+  -harmonize has two modes, main harmonize editing and instrument editing
+    -main 
+      -edits how often the instrument repeats/is triggered, except waveform which is constant
+      -has the number of semitones above that are being played
+    -instrument
+      -has effects for each instrument: drums,strings,waveform
+
+button that toggles between playing or editing mode, double tap does live-edit-playing
+
+*/
+
+//audio
+#include <Audio.h>
+#include <Wire.h>
+#include <SPI.h>
+#include <SD.h>
+#include <SerialFlash.h>
+
+//screen
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+//timers
+#include <elapsedMillis.h>
+
+// GUItool: begin automatically generated code
+AudioSynthSimpleDrum     harmonizeDrum;          //xy=111.0000114440918,436.20000648498535
+AudioSynthWaveform       harmonizeWaveform;      //xy=112.00000762939453,401.1999816894531
+AudioSynthKarplusStrong  harmonizeString;        //xy=119.00000381469727,470.20000743865967
+AudioSynthSimpleDrum     padDrum1;          //xy=159.00000381469727,534.0000076293945
+AudioInputI2S            i2s1;           //xy=214,317.20001220703125
+AudioMixer4              harmonizeMixer;         //xy=309.99999237060547,386.2000045776367
+AudioMixer4              padMixer;         //xy=312.99999237060547,465.200008392334
+AudioMixer4              inputMixer;     //xy=333,317.1999931335449
+AudioAnalyzeNoteFrequency notefreq1;      //xy=509,291.20001220703125
+AudioMixer4              fullMixer;         //xy=511.7999954223633,373.0000057220459
+AudioEffectChorus        chorus1;        //xy=635,502.20001220703125
+AudioEffectBitcrusher    bitcrusher1;    //xy=638,450.20001220703125
+AudioEffectFreeverb      freeverb1;      //xy=639,550.2000122070312
+AudioEffectFlange        flange1;        //xy=641.9999961853027,375.20000553131104
+AudioEffectDelay         delay1;         //xy=646,637.2000122070312
+AudioMixer4              finalMixer;     //xy=789,610.2000122070312
+AudioAmplifier           amp1;           //xy=911,605.2000122070312
+AudioOutputI2S           i2s2;           //xy=1037,606.2000122070312
+AudioConnection          patchCord1(harmonizeDrum, 0, harmonizeMixer, 2);
+AudioConnection          patchCord2(harmonizeWaveform, 0, harmonizeMixer, 1);
+AudioConnection          patchCord3(harmonizeString, 0, harmonizeMixer, 3);
+AudioConnection          patchCord4(padDrum1, 0, padMixer, 0);
+AudioConnection          patchCord5(i2s1, 0, inputMixer, 0);
+AudioConnection          patchCord6(i2s1, 1, inputMixer, 1);
+AudioConnection          patchCord7(harmonizeMixer, 0, fullMixer, 1);
+AudioConnection          patchCord8(padMixer, 0, fullMixer, 2);
+AudioConnection          patchCord9(inputMixer, notefreq1);
+AudioConnection          patchCord10(inputMixer, 0, fullMixer, 0);
+AudioConnection          patchCord11(fullMixer, flange1);
+AudioConnection          patchCord12(chorus1, freeverb1);
+AudioConnection          patchCord13(bitcrusher1, chorus1);
+AudioConnection          patchCord14(freeverb1, delay1);
+AudioConnection          patchCord15(flange1, bitcrusher1);
+AudioConnection          patchCord16(delay1, 0, finalMixer, 0);
+AudioConnection          patchCord17(delay1, 1, finalMixer, 1);
+AudioConnection          patchCord18(delay1, 2, finalMixer, 2);
+AudioConnection          patchCord19(delay1, 3, finalMixer, 3);
+AudioConnection          patchCord20(finalMixer, amp1);
+AudioConnection          patchCord21(amp1, 0, i2s2, 0);
+AudioConnection          patchCord22(amp1, 0, i2s2, 1);
+AudioControlSGTL5000     sgtl5000_1;     //xy=373,592.2000122070312
+// GUItool: end automatically generated code
+
+
+#define SCREENADDRESS 0x3C
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+//light stuff:
+const int delayOnLightPin = 0;//TODO: assign actual pin numbers
+const int freeverbOnLightPin = 1;
+const int bitCrusherOnLightPin = 2;
+const int chorusOnLightPin = 3;
+const int flangeOnLightPin = 4;
+const int harmonizeOnLightPin = 5;
+
+//button stuff
+
+const int harmonizeButtonPin = 25;
+const int padPin = 26;//TODO: only for breadboard, eventually use midi keyboard
+const int chorusButtonPin = 27;
+const int flangeButtonPin = 28;
+const int freeverbButtonPin = 29;
+const int bitCrusherButtonPin = 30;
+const int editPlayStatePin = 31;
+const int delayButtonPin = 32;
+
+bool delayHitHigh = true;
+bool freeverbHitHigh = true;
+bool chorusHitHigh = true;
+bool bitCrusherHitHigh = true;
+bool flangeHitHigh = true;
+bool editPlayStateHitHigh = true;
+bool harmonizeHitHigh = true;
+bool padHitHigh = true;
+
+int buttonReadVal;
+
+//potentiometer stuff
+const int pot1Pin = 39;
+const int pot2Pin = 41;
+const int pot3Pin = 40;
+const int pot4Pin = 38;
+
+double pot1;
+double pot2;
+double pot3;
+double pot4;
+
+//audio stuff
+enum last_effect_selected {delayEffect,freeverbEffect,chorusEffect,bitCrusherEffect,flangeEffect,harmonizeEffect};
+last_effect_selected lastEffectSelected;
+
+bool freeverbOn = false;
+bool delayOn = false;
+bool chorusOn = false;
+bool bitCrusherOn = false;
+bool flangeOn = false;
+bool toneSweepOn = false;
+bool harmonizeOn = false;
+
+bool playing = true;
+bool liveEditingPlaying = false;
+int playingButtonDoubleTapTimer = 500;//if mode button hit twice in 40 millis, switch to live editing and playing
+
+
+bool updateFreeverbDisplay = true;//if you need to update screen, this is true. Otherwise, it is false. This way, screen is not being sent messages a lot.
+bool updateDelayDisplay = true;
+bool updateChorusDisplay = true;
+bool updateBitCrusherDisplay = true;
+bool updateFlangeDisplay = true;
+bool updateHarmonizeDisplay = true;
+
+double delayCh0 = 50;//200
+double delayCh1= 80;//400
+double delayCh2= 110;//600
+double delayCh3= 0;
+
+double roomSize = .4;//.3
+double damping = .8;//.8
+
+double bitSampleRate =  2800;//2800;// 44100 passthrough, full sample rate
+double crushBits = 2;//3;//16 passthrough, no bits compressed
+
+short chorusBuffer[16*AUDIO_BLOCK_SAMPLES];
+int chorusNumVoices = 3;//3;//1 means solo origional, each additional is another voice
+
+int maxFlangeHertz = 5;//5;//completely arbitrary, just didn't want to have a big scale when thousands of decimals make decent changes.
+int flangeLength = 2;//2;//flangelength is used to control every other variable at once in an interesting way
+short flangeBuffer[AUDIO_BLOCK_SAMPLES * 4];
+int flangeOffset = AUDIO_BLOCK_SAMPLES;
+int flangeDepth = AUDIO_BLOCK_SAMPLES/2;
+double flangeDelayRate = 3;//3;
+
+int harmonizeCurrentFrequency = 440;//frequency analyzed from fft
+int readFrequency;//if using normal, don't use wack. Wack samples a ton and has everything, harmonize current is just the most recent reading.
+int editingInstrument = 0;//0 means editing these three effects:
+
+enum harmonize_type{waveform,drum,string};// waveform, 1 drum, 2 string
+harmonize_type harmonizeType;
+
+double harmonizeNumSemiTones = 7;//will be integers, but for use in the pow() function it has to be x.0
+int harmonizeActivatePeriod = 500;//how often should the drum or string plucked notes repeat.
+
+//editing instrument means editing these effects for whatever harmonize type
+
+//drums
+int harmonizeDrumFrequency = 440;
+int harmonizeDrumLength = 500;
+float harmonizeDrumSecondMix = .5;
+float harmonizeDrumPitchMod = .5;
+
+int padDrum1Frequency = 55;
+int padDrum1Length = 60;
+float padDrum1SecondMix = .5;
+float padDrum1DrumPitchMod = .5;
+
+double stringFrequency;
+float stringVelocity; 
+
+int waveformFrequency; 
+enum waveform_type {sine,sawtooth,bl_sawtooth,rv_sawtooth,bl_rv_sawtooth,square,bl_square,triangle,var_triangle,arbitrary,pulse,bl_pulse,sampleHold};
+waveform_type waveformType;
+
+int waveformList[13] = {
+  WAVEFORM_SINE,
+  WAVEFORM_SAWTOOTH,
+  WAVEFORM_BANDLIMIT_SAWTOOTH,
+  WAVEFORM_SAWTOOTH_REVERSE,
+  WAVEFORM_BANDLIMIT_SAWTOOTH_REVERSE,
+  WAVEFORM_SQUARE,
+  WAVEFORM_BANDLIMIT_SQUARE,
+  WAVEFORM_TRIANGLE,
+  WAVEFORM_TRIANGLE_VARIABLE,
+  WAVEFORM_ARBITRARY,
+  WAVEFORM_PULSE,
+  WAVEFORM_BANDLIMIT_PULSE,
+  WAVEFORM_SAMPLE_HOLD,
+};
+
+double volume = 0.3; 
+
+elapsedMillis liveEditdoubleTapTimer = 0;
+elapsedMillis potsTimer = 0;
+elapsedMillis lastButtonSampleTimer;//checking buttons every 50 millis
+elapsedMillis harmonizePlayTimer = 0;//checking time compared to harmonize note activation
+elapsedMillis printMemUsageTimer = 0;//printing memory max usage
+
+void setup() {
+  Serial.begin(9600);
+  Serial.println("Start");
+  
+  display.begin(SSD1306_SWITCHCAPVCC, SCREENADDRESS);
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3D for 128x64
+    Serial.println(F("ssd1306 failed"));
+    for(;;);
+  }
+  
+  display.setCursor(22, 0);
+  display.clearDisplay();
+  display.display();
+  display.setCursor(26, 0);
+  display.print(". ");
+  display.display();
+  delay(200);
+  display.setCursor(30, 0);
+  display.print(". ");
+  display.display();
+  delay(200);
+  display.setCursor(34, 0);
+  display.print(". ");
+  display.display();
+  display.clearDisplay();
+  //buttons
+    pinMode(delayButtonPin,INPUT);
+    pinMode(freeverbButtonPin,INPUT);
+    pinMode(bitCrusherButtonPin,INPUT);
+    pinMode(chorusButtonPin,INPUT);
+    pinMode(flangeButtonPin,INPUT);
+    pinMode(harmonizeButtonPin, INPUT);
+    pinMode(editPlayStatePin,INPUT);
+    pinMode(padPin,INPUT);
+
+    digitalWrite(delayButtonPin, HIGH);//writing high, will check if hit low to see when pressed
+    digitalWrite(freeverbButtonPin, HIGH);
+    digitalWrite(bitCrusherButtonPin, HIGH);
+    digitalWrite(chorusButtonPin, HIGH);
+    digitalWrite(flangeButtonPin, HIGH);
+    digitalWrite(harmonizeButtonPin, HIGH);
+    digitalWrite(editPlayStatePin, HIGH);
+    digitalWrite(padPin, HIGH);
+
+  //lights
+    pinMode(delayOnLightPin,OUTPUT);
+    pinMode(freeverbOnLightPin,OUTPUT);
+    pinMode(bitCrusherOnLightPin,OUTPUT);
+    pinMode(chorusOnLightPin,OUTPUT);
+    pinMode(flangeOnLightPin,OUTPUT);
+    pinMode(harmonizeOnLightPin,OUTPUT);
+  
+
+  AudioMemory(1000);
+  sgtl5000_1.enable();
+  sgtl5000_1.volume(1.0);
+  sgtl5000_1.inputSelect(AUDIO_INPUT_LINEIN);
+  sgtl5000_1.autoVolumeControl(1,3,0,-18,6,8);
+
+  inputMixer.gain(0,1.0);
+  inputMixer.gain(1,1.0);
+
+  harmonizeWaveform.begin(1,440,WAVEFORM_SAWTOOTH);
+
+  harmonizeDrum.frequency(harmonizeDrumFrequency);
+  harmonizeDrum.length(harmonizeDrumLength);
+  harmonizeDrum.secondMix(harmonizeDrumSecondMix);
+  harmonizeDrum.pitchMod(harmonizeDrumPitchMod);
+  //string is defined when it is called
+  
+  padDrum1.frequency(padDrum1Frequency);
+  padDrum1.length(padDrum1Length);
+  padDrum1.secondMix(padDrum1SecondMix);
+  padDrum1.pitchMod(padDrum1DrumPitchMod);
+
+  harmonizeMixer.gain(0,1.0);//empty now, used as linein in previous versions.
+  harmonizeMixer.gain(1,1.0);//waveform
+  harmonizeMixer.gain(2,1.0);//drum
+  harmonizeMixer.gain(3,1.0);//string
+  
+  padMixer.gain(0,1.0);
+  padMixer.gain(1,1.0);
+  padMixer.gain(2,1.0);
+  padMixer.gain(3,1.0);
+
+  fullMixer.gain(0,1.0);
+  fullMixer.gain(1,1.0);
+  fullMixer.gain(2,1.0);
+  fullMixer.gain(3,1.0);
+
+  flange1.begin(flangeBuffer,flangeLength*AUDIO_BLOCK_SAMPLES,flangeOffset,flangeDepth,flangeDelayRate);
+
+  bitcrusher1.bits(crushBits);
+  bitcrusher1.sampleRate(bitSampleRate);  
+
+  chorus1.begin(chorusBuffer,16*AUDIO_BLOCK_SAMPLES,chorusNumVoices);
+
+  freeverb1.roomsize(roomSize);
+  freeverb1.damping(damping);
+
+  delay1.delay(0,delayCh0);
+  delay1.delay(1,delayCh1);
+  delay1.delay(2,delayCh2);
+  delay1.delay(3,delayCh3);
+
+  finalMixer.gain(0,1.0);
+  finalMixer.gain(1,1.0);
+  finalMixer.gain(2,1.0);
+  finalMixer.gain(3,1.0);
+
+  amp1.gain(volume);
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(22, 0);
+  display.print("Audio working!");
+  display.display();
+  delay(200);
+
+  notefreq1.begin(.5);//.5 is the level of certanty of a frequency required to register it.
+  freeverbOn = false;
+  delayOn = false;
+  chorusOn = false;
+  bitCrusherOn = false;
+  flangeOn = false;
+  toneSweepOn = false;
+  harmonizeOn = false;
+}
+
+void loop() {
+  //main code:
+    //triggerToneSweep();
+  checkButtons();
+  if(liveEditingPlaying == true){
+    liveEditPlay();
+  }
+  else{
+    if(playing == true){
+      sendOutEffectParams();
+      }
+    else{
+      updateEffectParams();
+    }
+  }
+  updateDisplays();
+  /*  
+  if(printMemUsageTimer>=5000){
+    Serial.println("============================================");
+    Serial.println(AudioMemoryUsageMax());
+    printMemUsageTimer = 0;
+  }*/
+  while(notefreq1.available()){    
+    readFrequency = notefreq1.read();
+  }
+}
+
+//TODO: get all light pins, then write this function in loop
+
+void liveEditPlay(){ 
+  updateEffectParams();
+  sendOutEffectParams();
+  Serial.println("LiveEditPlayCall");
+}
+
+void writeStatusLights(){
+  if(delayOn){
+   digitalWrite(delayOnLightPin,HIGH);
+  }else{
+    digitalWrite(delayOnLightPin,LOW);
+  }
+  if(freeverbOn){
+    digitalWrite(freeverbOnLightPin,HIGH);
+  }else{
+    digitalWrite(freeverbOnLightPin,LOW);
+  }
+  if(chorusOn){
+    digitalWrite(chorusOnLightPin,HIGH);
+  }else{
+    digitalWrite(chorusOnLightPin,LOW);
+  }
+  if(bitCrusherOn){
+    digitalWrite(bitCrusherOnLightPin,HIGH);
+  }else{
+    digitalWrite(bitCrusherOnLightPin,LOW);
+  }
+  if(flangeOn){
+    digitalWrite(bitCrusherOnLightPin,HIGH);
+  }else{
+    digitalWrite(flangeOnLightPin,LOW);
+  } 
+  if(harmonizeOn){
+    digitalWrite(harmonizeOnLightPin,HIGH);
+  }else{
+    digitalWrite(harmonizeOnLightPin,LOW);
+  } 
+}
+void triggerToneSweep(){
+  Serial.println("tonesweep start: ");
+  Serial.println("========Tonesweep=======");
+  for(int freq = 200; freq <= 500; freq+=5){
+    harmonizeWaveform.frequency(freq);
+    delay(10);
+  }
+  for(int freq = 500; freq >= 200; freq-=5){
+    harmonizeWaveform.frequency(freq);
+    delay(10);
+  }
+  Serial.println("tonesweep end");
+}
+
+void updateDisplays(){
+  switch(lastEffectSelected){
+    case delayEffect:
+      displayDelay();
+      break;
+    case freeverbEffect:
+      displayFreeverb();
+      break;
+    case chorusEffect:
+      displayChorus(); 
+      break;
+    case bitCrusherEffect:
+      displayBitCrusher();
+      break;
+    case flangeEffect:
+      displayFlange();
+      break;
+    case harmonizeEffect:
+      displayHarmonize();
+      break;
+  }
+}
+
+void displayStatus(){
+  if(liveEditingPlaying == true){
+    display.setCursor(10,50);
+    display.print("M: EP");
+  }else{
+    if(playing){
+      display.setCursor(10, 50);
+      display.print("M: P");
+    }
+    else{
+      display.setCursor(10, 50);
+      display.print("M: E");
+    }
+  }
+}
+
+void displayEffectOn(){
+  display.setCursor(100,50);
+  display.print("On");
+}
+void displayEffectOff(){
+  display.setCursor(100,50);
+  display.print("Off");
+}
+void displayDelay(){
+  if(updateDelayDisplay == true){
+    display.clearDisplay();
+    display.setCursor(0,0);
+    display.println("Delay: ");
+    display.print("d1: "); display.println(delayCh0); 
+    display.print("d2: "); display.println(delayCh1);
+    display.print("d3: "); display.println(delayCh2); 
+    display.print("d4: "); display.println(delayCh3);
+    displayStatus();
+    if(delayOn){displayEffectOn();}
+    else{displayEffectOff();}
+    display.display();
+    updateDelayDisplay = false;
+  }
+}
+void displayFreeverb(){ 
+  if(updateFreeverbDisplay == true){   
+    display.clearDisplay();
+    display.setCursor(0,0);
+    display.println("Freeverb: ");
+    display.print("rS: "); display.println(roomSize);
+    display.print("dp: "); display.println(damping);  
+    displayStatus();
+    if(freeverbOn){displayEffectOn();}
+      else{displayEffectOff();}
+    display.display();
+    updateFreeverbDisplay = false;
+  }
+}
+void displayChorus(){
+  if(updateChorusDisplay == true){
+    display.clearDisplay();
+    display.setCursor(0,0);
+    display.println("chorus: ");
+    display.print("nV: "); display.println(chorusNumVoices);
+    displayStatus();
+    if(chorusOn){displayEffectOn();}
+      else{displayEffectOff();}
+    display.display();
+    updateChorusDisplay = false;
+  }
+}
+void displayBitCrusher(){
+  if(updateBitCrusherDisplay == true){
+    display.clearDisplay();
+    display.setCursor(0,0);
+    display.println("bitCrusher: ");
+    display.print("cB: "); display.println(crushBits);
+    display.print("sR: "); display.println(bitSampleRate);
+    displayStatus();
+    if(bitCrusherOn){displayEffectOn();}
+      else{displayEffectOff();}
+    display.display();
+    updateBitCrusherDisplay = false;
+  }
+}
+void displayFlange(){
+  if(updateFlangeDisplay == true){
+    display.clearDisplay();
+    display.setCursor(0,0);
+    display.println("flange: ");
+    display.print("fL: "); display.println(flangeLength);
+    display.print("fO: "); display.println(flangeOffset);
+    display.print("fD: "); display.println(flangeDepth); 
+    display.print("dR: "); display.println(flangeDelayRate);
+    displayStatus();
+    if(flangeOn){displayEffectOn();}
+    else{displayEffectOff();}
+    display.display();
+    updateFlangeDisplay = false;
+  }
+}
+void displayHarmonize(){ 
+  if(updateHarmonizeDisplay == true){ 
+    display.clearDisplay();
+    display.setCursor(0,0);
+    display.print("Harmonize: ");
+   
+    if(editingInstrument == 0){//editing overall harmonize  
+      display.println("OS");//overall select
+      display.print("type: ");
+      switch(harmonizeType){
+        case waveform:
+          display.println("waveform");
+          break;
+        case drum:
+          display.println("drums");
+          break;
+        case string:
+          display.println("strings");
+      }
+      display.print("nSt: "); display.println(harmonizeNumSemiTones);
+      display.print("per: "); display.println(harmonizeActivatePeriod);
+      display.print("rfreq: "); display.println(harmonizeCurrentFrequency);//read frequency
+      display.print("hfreq: "); 
+      switch(harmonizeType){
+        case waveform:
+          display.println(waveformFrequency);
+          break;
+        case drum:
+          display.println(harmonizeDrumFrequency);
+          break;
+        case string:
+          display.println(stringFrequency);
+      }//harmonize frequency
+    }else if(editingInstrument == 1){
+      display.print("IS: ");//instrument select
+      switch(harmonizeType){
+        case waveform:
+          display.println(" Wave");
+          display.println("v type v");   
+          switch(waveformType){
+            case sine:
+              display.println("SINE");
+              break;
+            case sawtooth:
+              display.println("SAWTOOTH");
+              break;
+            case bl_sawtooth:
+              display.println("BL_SAWTOOTH");
+              break;
+            case rv_sawtooth:
+              display.println("SAWTOOTH_RV");
+              break;
+            case bl_rv_sawtooth:
+              display.println("BL_SAWTOOTH_RV");
+              break;
+            case square:
+              display.println("SQUARE");
+              break;
+            case bl_square:
+              display.println("BL_SQUARE");
+              break;
+            case triangle:
+              display.println("TRIANGLE");
+              break;
+            case var_triangle:
+              display.println("TRIANGLE_VARIABLE");
+              break;
+            case arbitrary:
+              display.println("ARBITRARY");
+              break;
+            case pulse:
+              display.println("PULSE");
+              break;
+            case bl_pulse:
+              display.println("BL_PULSE");
+              break;
+            case sampleHold:
+              display.println("SAMPLEHOLD");
+              break;
+            }
+            display.print("rfreq: "); display.println(harmonizeCurrentFrequency);//read frequency
+            display.print("hfreq: "); display.println(waveformFrequency);//harmonize frequency
+          break;
+        case drum:
+          display.println("Drum");
+          display.print("Len: "); display.println(harmonizeDrumLength);
+          display.print("SecMx: "); display.println(harmonizeDrumSecondMix);
+          display.print("PitMod: "); display.println(harmonizeDrumPitchMod);
+          display.print("rfreq: "); display.println(harmonizeCurrentFrequency);//read frequency
+          display.print("hfreq: "); display.println(harmonizeDrumFrequency);//harmonize frequency
+          break;
+        case string:
+          display.println("String");
+          display.print("Vel: "); display.println(stringVelocity);
+          display.print("rfreq: "); display.println(harmonizeCurrentFrequency);//read frequency
+          display.print("hfreq: "); display.println(stringFrequency);//harmonize frequency
+          break;
+      }    
+    }
+    displayStatus();
+    if(harmonizeOn){displayEffectOn();}
+    else{displayEffectOff();}
+    display.display();
+    updateHarmonizeDisplay = false;
+  }
+}
+void sendOutEffectParams(){
+  // v done in buttons
+  Serial.println("sendOutEffectParamsCall");
+  updateFreeverbDisplay = true;
+  updateDelayDisplay = true;
+  updateChorusDisplay = true;
+  updateBitCrusherDisplay = true;
+  updateFlangeDisplay = true;
+  updateHarmonizeDisplay = true;
+  if(freeverbOn == true){
+    freeverb1.roomsize(roomSize); freeverb1.damping(damping); 
+  }
+  if(delayOn == true){
+    //Serial.println("  outputting delay");
+    delay1.delay(0,delayCh0);delay1.delay(1,delayCh1);delay1.delay(2,delayCh2);delay1.delay(3,delayCh3);
+  }
+  if(chorusOn == true){
+    chorus1.voices(chorusNumVoices);
+    //Serial.print("    nVoices: ");//Serial.println(chorusNumVoices);
+  }
+  if(bitCrusherOn == true){
+    if(crushBits == 0){crushBits = 1;}
+    bitcrusher1.bits(crushBits);
+    bitcrusher1.sampleRate(bitSampleRate);     
+  }
+  if(flangeOn == true){
+    flange1.voices(flangeOffset,flangeDepth,flangeDelayRate);
+  }
+  if(harmonizeOn == true){   
+    harmonizeCurrentFrequency = readFrequency; // use readFrequency for wack harmonize effect  
+    updateHarmonizeDisplay = true;  
+
+    switch(harmonizeType){
+      case waveform://waveform
+        harmonizeMixer.gain(1,1.0);
+        harmonizeMixer.gain(2,0.0);
+        harmonizeMixer.gain(3,0.0);
+
+        waveformFrequency = harmonizeCurrentFrequency * pow(pow(2.0,harmonizeNumSemiTones),1/12.0); 
+        harmonizeWaveform.frequency(waveformFrequency);
+        harmonizeWaveform.begin(waveformList[waveformType]);//waveformlist is an array of waveforms, type is 0 to 12
+        break;
+      case drum: // drums
+        harmonizeMixer.gain(1,0.0);
+        harmonizeMixer.gain(2,1.0);
+        harmonizeMixer.gain(3,0.0);
+        if(harmonizePlayTimer >= harmonizeActivatePeriod){
+          harmonizeDrumFrequency = harmonizeCurrentFrequency * pow(pow(2.0,harmonizeNumSemiTones),1/12.0); 
+          harmonizeDrum.frequency(harmonizeDrumFrequency);
+          harmonizeDrum.length(harmonizeDrumLength);
+          harmonizeDrum.secondMix(harmonizeDrumSecondMix);
+          harmonizeDrum.pitchMod(harmonizeDrumPitchMod);
+          harmonizeDrum.noteOn();
+          harmonizePlayTimer = 0;
+          Serial.println("played drums");
+        }
+        break;
+      case string://string
+        harmonizeMixer.gain(1,0.0);
+        harmonizeMixer.gain(2,0.0);
+        harmonizeMixer.gain(3,1.0);
+        if(harmonizePlayTimer >= harmonizeActivatePeriod){
+          stringFrequency = harmonizeCurrentFrequency * pow(pow(2,harmonizeNumSemiTones),1/12.0);
+          harmonizeString.noteOn(stringFrequency, stringVelocity);
+          harmonizePlayTimer = 0;
+          Serial.println("played strings");
+        }        
+        break;
+    }
+  }
+  if(delayOn == false){
+    delay1.delay(0,0);delay1.delay(1,0);delay1.delay(2,0);delay1.delay(3,0);
+  }
+  if(freeverbOn == false){
+      freeverb1.roomsize(0); freeverb1.damping(0);
+  }
+  if(chorusOn == false){
+    chorus1.voices(1);
+  }
+  if(bitCrusherOn == false){
+    bitcrusher1.bits(16);
+    bitcrusher1.sampleRate(44100);   
+  }
+  if(flangeOn == false){
+    flange1.voices(0,0,0);
+  }
+  if(harmonizeOn == false){
+    harmonizeMixer.gain(1,0.0);
+    harmonizeMixer.gain(2,0.0);
+    harmonizeMixer.gain(3,0.0);
+  }    
+}
+void readPots(){
+  if(potsTimer >= 50){
+    pot1 = map(analogRead(pot1Pin),0,1000,0,127);
+    pot2 = map(analogRead(pot2Pin),0,1000,0,127);
+    pot3 = map(analogRead(pot3Pin),0,1000,0,127);
+    pot4 = map(analogRead(pot4Pin),0,1000,0,127);
+    potsTimer = 0;    
+  }
+}
+
+void updateEffectParams(){
+  Serial.println("updateEffectParamsCall");
+  readPots();
+  switch(lastEffectSelected){
+    case delayEffect://delay
+      updateDelayDisplay = true;
+      delayCh0 = floor(map(pot1,0,127,0,2000));//floor(1000 * ((float)pot1/(63.5)));//quarter of 127, that way max is 4000 aka 4 seconds
+      delayCh1 = floor(map(pot2,0,127,0,2000));//floor(1000 * ((float)pot2/(63.5)));
+      delayCh2 = floor(map(pot3,0,127,0,2000));//floor(1000 * ((float)pot3/(63.5)));
+      delayCh3 = floor(map(pot4,0,127,0,2000));// floor(1000 * ((float)pot4/(63.5)));  
+      break;
+    case freeverbEffect:
+      //freeverb
+      updateFreeverbDisplay = true;
+      roomSize = map(pot1,0,127,0,1);//(float)pot1/127;
+      damping = map(pot2,0,127,0,1);//(float)pot2/127;
+      break;
+    case chorusEffect:
+      //chorus
+      updateChorusDisplay = true;
+      chorusNumVoices = floor(map(pot1,0,127,0.5,10.5));//floor((float)(pot1/25.4)+.9);//5 voices
+      break;
+    case bitCrusherEffect:
+      //bitcrusher
+      updateBitCrusherDisplay = true;
+      crushBits = floor(map(pot1,127,0,1.5,16.5));
+      bitSampleRate = floor(map(pot2,127,0,1.5,44100.5));
+      break;
+    case flangeEffect:
+      //flange
+      updateFlangeDisplay = true;
+      flangeLength = floor(map(pot1,0,127,0.5,16.5));
+      flangeOffset = floor(map(pot2,0,127,0.5,flangeLength+0.5)) * AUDIO_BLOCK_SAMPLES;
+      flangeDepth = floor(map(pot3,0,127,0.5,flangeLength+0.5)) * AUDIO_BLOCK_SAMPLES;
+      flangeDelayRate = map(pot4,0,127,0,maxFlangeHertz);
+      break;
+    case harmonizeEffect:
+      //harmonize
+      updateHarmonizeDisplay = true;
+      editingInstrument = floor(map(pot1,0,127,0.5,1.5));//the .5 is so that the sliders are able to get to both reliably, but only between 1 or 2 with floor
+
+      //TODO: rename editingInstrument to harmonizeEditingState
+      if(editingInstrument == 0){//editing overall harmonize  
+        harmonizeType = int(floor(map(pot2,0,127,0.5,2.5)));
+        harmonizeNumSemiTones = floor(map(pot3,0,127,.5,12.9));
+        harmonizeActivatePeriod = floor(map(pot4,0,127,0,3000));//TODO: make logerithmic, so that lower values up to 1000 have fine control, then less control for high values up to 3000.
+      }
+      else if(editingInstrument == 1){
+        switch(harmonizeType){
+          case waveform://waveform
+            harmonizeMixer.gain(1,1.0);
+            harmonizeMixer.gain(2,0.0);
+            harmonizeMixer.gain(3,0.0);
+            waveformType = int(floor(map(pot2,0,127,0.5,12.5)));//each of the waveform types, sine,sawtooth,bandlimitSawtooth,etc.
+            break;
+          case drum: // drums
+            harmonizeMixer.gain(1,0.0);
+            harmonizeMixer.gain(2,1.0);
+            harmonizeMixer.gain(3,0.0);
+            harmonizeDrumLength = map(pot2,0,127,0,800);
+            harmonizeDrumSecondMix = map(pot3,0,127,0,1);
+            harmonizeDrumPitchMod = map(pot4,0,127,0,1);
+            break;
+          case string://string
+            harmonizeMixer.gain(1,0.0);
+            harmonizeMixer.gain(2,0.0);
+            harmonizeMixer.gain(3,1.0);
+            stringVelocity = map(pot2,0,127,0,1);     
+            break;
+        }
+      }
+      break;
+  }
+}
+void checkButtons(){
+  if(lastButtonSampleTimer >= 50){
+    buttonReadVal = digitalRead(freeverbButtonPin);
+    if(freeverbHitHigh == true && buttonReadVal == LOW){
+      if(playing == true){
+        freeverbOn = !freeverbOn;
+      }
+      freeverbHitHigh = false;
+      lastEffectSelected = (freeverbEffect);//0 means edits will apply to delays, 1 freeverb, 2 chorus, 3 bitcrusher 4 flange, 5 harmonize
+      updateFreeverbDisplay = true;
+      //Serial.println("freeverbHit");
+    }else if(buttonReadVal == HIGH){
+      freeverbHitHigh = true;
+    }
+
+    buttonReadVal = digitalRead(delayButtonPin);
+    if(delayHitHigh == true && buttonReadVal == LOW){
+      if(playing){
+        delayOn = !delayOn;
+      }
+      delayHitHigh = false;
+      lastEffectSelected = (delayEffect);
+      updateDelayDisplay = true;
+      //Serial.println("delayHit"); 
+      
+    }else if(buttonReadVal == HIGH){
+      delayHitHigh = true;
+    }
+
+    buttonReadVal = digitalRead(chorusButtonPin);
+    if(chorusHitHigh == true && buttonReadVal == LOW){
+      if(playing){
+        chorusOn = !chorusOn;
+      }
+      chorusHitHigh = false;
+      lastEffectSelected = (chorusEffect);
+      updateChorusDisplay = true;
+      //Serial.println("chorusHit");
+    }else if(buttonReadVal == HIGH){
+      chorusHitHigh = true;
+    }
+
+    buttonReadVal = digitalRead(bitCrusherButtonPin);
+    if(bitCrusherHitHigh == true && buttonReadVal == LOW){
+      if(playing){
+        bitCrusherOn = !bitCrusherOn;
+      }
+      bitCrusherHitHigh = false;
+      updateBitCrusherDisplay = true;
+      lastEffectSelected = bitCrusherEffect;
+      //Serial.println("bitCrusherHit"); 
+    }else if(buttonReadVal == HIGH){
+      bitCrusherHitHigh = true;
+    }
+
+    buttonReadVal = digitalRead(flangeButtonPin);
+    if(flangeHitHigh == true && buttonReadVal == LOW){
+      if(playing){
+        flangeOn = !flangeOn;
+      }
+      flangeHitHigh = false;
+      lastEffectSelected = (flangeEffect);
+      updateFlangeDisplay = true;
+      //Serial.println("flangeHit"); 
+    }else if(buttonReadVal == HIGH){
+      flangeHitHigh = true;
+    }
+
+    buttonReadVal = digitalRead(harmonizeButtonPin);
+    if(harmonizeHitHigh == true && buttonReadVal == LOW){
+      if(playing){
+        harmonizeOn = !harmonizeOn;
+      }
+      harmonizeHitHigh = false;
+      updateHarmonizeDisplay = true;
+      lastEffectSelected = (harmonizeEffect);
+    }else if(buttonReadVal == HIGH){
+      harmonizeHitHigh = true;
+    }
+
+    buttonReadVal = digitalRead(editPlayStatePin); 
+    if(editPlayStateHitHigh == true && buttonReadVal == LOW){
+      if(liveEditdoubleTapTimer <= playingButtonDoubleTapTimer){
+        liveEditingPlaying = true;
+      }
+      else{
+         playing = !playing;
+         liveEditingPlaying = false;
+      }
+
+      editPlayStateHitHigh = false;
+      
+      updateFreeverbDisplay = true;//if you need to update screen, this is true. Otherwise, it is false.
+      updateDelayDisplay = true;
+      updateChorusDisplay = true;
+      updateBitCrusherDisplay = true;
+      updateFlangeDisplay = true;
+      updateHarmonizeDisplay = true;
+
+      liveEditdoubleTapTimer = 0;
+
+    }else if(buttonReadVal == HIGH){
+      editPlayStateHitHigh = true;
+    }
+
+    buttonReadVal = digitalRead(padPin);
+    if(padHitHigh == true && buttonReadVal == LOW){
+      padDrum1.noteOn();
+      padHitHigh = false;
+    }else if(buttonReadVal == HIGH){
+      padHitHigh = true;
+    }
+    lastButtonSampleTimer = 0;
+  }
+}
